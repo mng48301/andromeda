@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import mapboxgl from 'mapbox-gl';
-import { BalloonData } from '@/services/balloonService';
+import { BalloonData, predictNextPosition } from '@/services/balloonService';
 import { WeatherData, fetchWeatherByCoordinates } from '@/services/weatherService';
 import type { Feature, LineString } from 'geojson';
 import * as turf from '@turf/turf';
@@ -29,8 +29,6 @@ const Map = ({ balloonData }: MapProps) => {
   const markersRef = useRef<mapboxgl.Marker[]>([]);
   const animationFrame = useRef<number | null>(null);
   const [selectedBalloon, setSelectedBalloon] = useState<[number, number, number] | null>(null);
-  const [weatherData, setWeatherData] = useState<WeatherData | null>(null);
-  const [weatherWarnings, setWeatherWarnings] = useState<WeatherWarning[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [isAnimating, setIsAnimating] = useState(false);
   const [isDescriptionOpen, setIsDescriptionOpen] = useState(false);
@@ -40,6 +38,23 @@ const Map = ({ balloonData }: MapProps) => {
     temperature: false,
     clouds: true
   });
+
+  const [currentWeatherInfo, setCurrentWeatherInfo] = useState<{
+    data: WeatherData | null;
+    warnings: WeatherWarning[];
+  }>({
+    data: null,
+    warnings: []
+  });
+
+  const [predictedPath, setPredictedPath] = useState<Feature<LineString> | null>(null);
+
+  const getMap = () => {
+    if (!map.current) {
+      throw new Error('Map not initialized');
+    }
+    return map.current;
+  };
 
   const createWarningSymbol = () => {
     const warningSymbol = document.createElement('div');
@@ -111,10 +126,9 @@ const Map = ({ balloonData }: MapProps) => {
   };
 
   const animateFlightPath = (path: [number, number, number][]) => {
-    if (!map.current) return;
+    if (!map.current || path.length < 2) return;
     setIsAnimating(true);
 
-    // Create the complete path line
     const line: Feature<LineString> = {
       type: 'Feature',
       properties: { pathType: 'historical' },
@@ -124,8 +138,11 @@ const Map = ({ balloonData }: MapProps) => {
       }
     };
 
-    // Create the animated line that will grow
-    const animatedLine = turf.lineString([]);
+    // Initialize with first two points to ensure valid LineString
+    const animatedLine = turf.lineString([
+      [path[0][0], path[0][1]],
+      [path[1][0], path[1][1]]
+    ]);
     let step = 0;
     const steps = 100;
     
@@ -143,7 +160,7 @@ const Map = ({ balloonData }: MapProps) => {
         if (source && 'setData' in source) {
           source.setData({
             type: 'FeatureCollection',
-            features: [line]  // Keep only the complete path
+            features: [line]
           });
         }
       }
@@ -159,6 +176,40 @@ const Map = ({ balloonData }: MapProps) => {
     animate();
   };
 
+  const findBalloonHistory = (position: [number, number, number]): [number, number, number][] => {
+    const [targetLng, targetLat] = position;
+    return balloonData
+      .map(hourData => 
+        hourData.find(([lng, lat]) => 
+          Math.abs(lng - targetLng) < 0.0001 && Math.abs(lat - targetLat) < 0.0001
+        )
+      )
+      .filter((pos): pos is [number, number, number] => pos !== undefined);
+  };
+
+  const createPredictedPath = async (
+    position: [number, number, number], 
+    weatherData: any
+  ): Promise<Feature<LineString>> => {
+    const steps = 20; // Number of prediction steps
+    const predictions: [number, number, number][] = [position];
+    
+    let currentPos = position;
+    for (let i = 0; i < steps; i++) {
+      currentPos = predictNextPosition(currentPos, weatherData);
+      predictions.push(currentPos);
+    }
+    
+    return {
+      type: 'Feature',
+      properties: { pathType: 'predicted' },
+      geometry: {
+        type: 'LineString',
+        coordinates: predictions.map(([lng, lat]) => [lng, lat])
+      }
+    };
+  };
+
   useEffect(() => {
     if (!mapContainer.current) return;
 
@@ -172,7 +223,7 @@ const Map = ({ balloonData }: MapProps) => {
       mapboxgl.accessToken = token;
 
       const newMap = new mapboxgl.Map({
-        container: mapContainer.current,
+        container: mapContainer.current as HTMLElement,
         style: 'mapbox://styles/mapbox/satellite-v9',
         center: [-80, 75],
         zoom: 2.8
@@ -181,7 +232,6 @@ const Map = ({ balloonData }: MapProps) => {
       map.current = newMap;
 
       newMap.on('load', () => {
-        // Add weather radar layer
         newMap.addSource('weather-radar', {
           type: 'raster',
           tiles: [
@@ -203,7 +253,6 @@ const Map = ({ balloonData }: MapProps) => {
           }
         });
 
-        // Add temperature layer
         newMap.addSource('weather-temp', {
           type: 'raster',
           tiles: [
@@ -225,7 +274,6 @@ const Map = ({ balloonData }: MapProps) => {
           }
         });
 
-        // Add clouds layer
         newMap.addSource('weather-clouds', {
           type: 'raster',
           tiles: [
@@ -247,7 +295,6 @@ const Map = ({ balloonData }: MapProps) => {
           }
         });
 
-        // Flight paths layer
         newMap.addSource('flightPaths', {
           type: 'geojson',
           data: {
@@ -256,7 +303,6 @@ const Map = ({ balloonData }: MapProps) => {
           }
         });
 
-        // Weather overlay layer
         newMap.addSource('weatherOverlay', {
           type: 'geojson',
           data: {
@@ -278,8 +324,22 @@ const Map = ({ balloonData }: MapProps) => {
               'animated', '#ff0000',
               '#00ff00'
             ],
-            'line-width': 2,
-            'line-opacity': 0.7,
+            'line-width': [
+              'match',
+              ['get', 'pathType'],
+              'predicted', 3,
+              'historical', 3,
+              'animated', 4,
+              3
+            ],
+            'line-opacity': [
+              'match',
+              ['get', 'pathType'],
+              'predicted', 0.9,
+              'historical', 0.9,
+              'animated', 1,
+              0.9
+            ],
             'line-dasharray': [
               'match',
               ['get', 'pathType'],
@@ -313,6 +373,112 @@ const Map = ({ balloonData }: MapProps) => {
       console.error('Map initialization error:', err);
     }
   }, []);
+
+  useEffect(() => {
+    try {
+      const loadData = async () => {
+        if (!map.current) return;
+        const currentMap = getMap();
+        
+        setIsLoading(true);
+
+        markersRef.current.forEach(marker => marker.remove());
+        markersRef.current = [];
+        
+        const source = currentMap.getSource('flightPaths');
+        if (source && 'setData' in source) {
+          (source as mapboxgl.GeoJSONSource).setData({
+            type: 'FeatureCollection',
+            features: []
+          });
+        }
+
+        const currentPositions = balloonData.find(hourData => hourData && hourData.length > 0);
+        if (!currentPositions || currentPositions.length === 0) {
+          setError('No balloon data available');
+          setIsLoading(false);
+          return;
+        }
+        
+        for (const position of currentPositions) {
+          const { marker, markerEl, markerContainer } = createMarker(position);
+
+          marker.addTo(currentMap);
+          markersRef.current.push(marker);
+
+          markerEl.addEventListener('click', async () => {
+            setSelectedBalloon(position);
+            setError(null);
+
+            const balloonPath = findBalloonHistory(position);
+            
+            if (balloonPath.length >= 1) {
+              const weatherData = await fetchWeatherByCoordinates(position[1], position[0]);
+              
+              if (weatherData) {
+                const warnings = analyzeWeatherWarnings(weatherData);
+                setCurrentWeatherInfo({ data: weatherData, warnings });
+
+                const historicalRoute: Feature<LineString> = {
+                  type: 'Feature',
+                  properties: { pathType: 'historical' },
+                  geometry: {
+                    type: 'LineString',
+                    coordinates: balloonPath.map(([lng, lat]) => [lng, lat])
+                  }
+                };
+
+                const predictedRoute = await createPredictedPath(position, weatherData);
+                setPredictedPath(predictedRoute);
+
+                const source = map.current?.getSource('flightPaths');
+                if (source && 'setData' in source) {
+                  (source as mapboxgl.GeoJSONSource).setData({
+                    type: 'FeatureCollection',
+                    features: [historicalRoute, predictedRoute].filter(Boolean)
+                  });
+                }
+
+                // Ensure the layer is visible
+                if (map.current?.getLayer('flightPaths')) {
+                  map.current.setLayoutProperty('flightPaths', 'visibility', 'visible');
+                }
+
+                const bounds = new mapboxgl.LngLatBounds();
+                [...balloonPath, ...predictedRoute.geometry.coordinates].forEach(
+                  ([lng, lat]) => bounds.extend([lng, lat] as [number, number])
+                );
+                
+                map.current?.fitBounds(bounds, {
+                  padding: 100,
+                  duration: 2000
+                });
+
+                animateFlightPath(balloonPath);
+              }
+            }
+          });
+
+          const weatherData = await fetchWeatherByCoordinates(position[1], position[0]);
+          if (weatherData) {
+            const warnings = analyzeWeatherWarnings(weatherData);
+            if (warnings.some(w => w.severity === 'high')) {
+              const warningSymbol = createWarningSymbol();
+              markerContainer.appendChild(warningSymbol);
+              markerEl.style.boxShadow = '0 0 10px #ff0000';
+            }
+          }
+        }
+        setIsLoading(false);
+      };
+
+      loadData();
+    } catch (err) {
+      setError('Failed to update balloon positions');
+      setIsLoading(false);
+      console.error('Error updating balloon positions:', err);
+    }
+  }, [balloonData]);
 
   const toggleWeatherLayer = (layer: keyof WeatherLayerState) => {
     if (!map.current) return;
@@ -359,106 +525,6 @@ const Map = ({ balloonData }: MapProps) => {
 
     return warnings;
   };
-
-  useEffect(() => {
-    if (!map.current || !balloonData.length) return;
-
-    try {
-      // Add a slight delay to ensure smooth loading and visibility of warning signs
-      const loadData = async () => {
-        setIsLoading(true);
-        await new Promise(resolve => setTimeout(resolve, 1000)); // 1 second delay
-
-        markersRef.current.forEach(marker => marker.remove());
-        markersRef.current = [];
-
-        const validData = balloonData.filter(hourData =>
-          Array.isArray(hourData) &&
-          hourData.every(coords =>
-            Array.isArray(coords) &&
-            coords.length === 3 &&
-            coords.every(val => typeof val === 'number' && !isNaN(val))
-          )
-        );
-
-        if (validData.length === 0) {
-          setError('No valid balloon data available');
-          setIsLoading(false);
-          return;
-        }
-
-        const currentPositions = validData[0] || [];
-        for (const position of currentPositions) {
-          const { marker, markerEl, markerContainer } = createMarker(position);
-
-          if (map.current) {
-            marker.addTo(map.current);
-            markersRef.current.push(marker);
-          }
-
-          markerEl.addEventListener('click', () => {
-            setSelectedBalloon(position);
-            setError(null);
-
-            const balloonPath = validData.map(hour =>
-              hour.find(([hlng, hlat]) => hlng === position[0] && hlat === position[1])
-            ).filter((pos): pos is [number, number, number] => pos !== undefined);
-
-            if (balloonPath.length >= 2) {
-              if (map.current) {
-                const coordinates = balloonPath.map(([lng, lat]) => [lng, lat]);
-                const route: Feature<LineString> = {
-                  type: 'Feature',
-                  properties: {},
-                  geometry: {
-                    type: 'LineString',
-                    coordinates: coordinates as [number, number][]
-                  }
-                };
-
-                if (map.current.getSource('route')) {
-                  (map.current.getSource('route') as mapboxgl.GeoJSONSource).setData(route);
-                } else {
-                  map.current.addSource('route', {
-                    type: 'geojson',
-                    data: route
-                  });
-
-                  map.current.addLayer({
-                    id: 'route',
-                    type: 'line',
-                    source: 'route',
-                    paint: {
-                      'line-color': '#00ff00',
-                      'line-width': 2
-                    }
-                  });
-                }
-              }
-              animateFlightPath(balloonPath);
-            }
-          });
-
-          const weatherData = await fetchWeatherByCoordinates(position[1], position[0]);
-          if (weatherData) {
-            const warnings = analyzeWeatherWarnings(weatherData);
-            if (warnings.some(w => w.severity === 'high')) {
-              const warningSymbol = createWarningSymbol();
-              markerContainer.appendChild(warningSymbol);
-              markerEl.style.boxShadow = '0 0 10px #ff0000';
-            }
-          }
-        }
-        setIsLoading(false);
-      };
-
-      loadData();
-    } catch (err) {
-      setError('Failed to update balloon positions');
-      setIsLoading(false);
-      console.error('Error updating balloon positions:', err);
-    }
-  }, [balloonData]);
 
   return (
     <div className="relative">
@@ -520,8 +586,8 @@ const Map = ({ balloonData }: MapProps) => {
               <p className="mb-2">This is <strong>Andromeda</strong>, a comprehensive dashboard that allows for you</p>
               <p className="mb-2">to track all Windborne balloons, along with global weather data and variations.</p>
               <p className="mb-2">Shows distribution patterns across regions, along with indications of <strong>endangered</strong></p>
-              <p className="mb-2">balloons in harsh conditions. Offers <strong>flight trajectory</strong> predictions as well. </p>
-              <p className="mb-2">Try <strong>clicking</strong> on a balloon. </p>
+              <p className="mb-2">balloons in harsh conditions. Try <strong>clicking</strong> on a balloon to show</p>
+              <p className="mb-2"> <strong>flight trajectory</strong> predictions based on weather conditions, as well as previous flight paths. </p>
             </div>
           )}
         </div>
@@ -533,18 +599,18 @@ const Map = ({ balloonData }: MapProps) => {
         </div>
       )}
 
-      {selectedBalloon && weatherData && (
+      {selectedBalloon && currentWeatherInfo.data && (
         <div className="absolute top-4 right-4 bg-white p-4 rounded shadow max-w-sm">
           <h3 className="font-bold mb-2">Weather Information</h3>
-          <p>Temperature: {weatherData.main.temp}°C</p>
-          <p>Wind Speed: {weatherData.wind.speed} m/s</p>
-          <p>Humidity: {weatherData.main.humidity}%</p>
-          <p>Conditions: {weatherData.weather[0].main}</p>
+          <p>Temperature: {currentWeatherInfo.data.main.temp}°C</p>
+          <p>Wind Speed: {currentWeatherInfo.data.wind.speed} m/s</p>
+          <p>Humidity: {currentWeatherInfo.data.main.humidity}%</p>
+          <p>Conditions: {currentWeatherInfo.data.weather[0].main}</p>
           <p>Balloon Altitude: {selectedBalloon[2].toFixed(2)} km</p>
-          {weatherWarnings.length > 0 && (
+          {currentWeatherInfo.warnings.length > 0 && (
             <div className="mt-4">
               <h4 className="font-bold text-red-500">Weather Warnings</h4>
-              {weatherWarnings.map((warning, index) => (
+              {currentWeatherInfo.warnings.map((warning, index) => (
                 <div
                   key={index}
                   className={`mt-2 p-2 rounded ${
@@ -560,6 +626,13 @@ const Map = ({ balloonData }: MapProps) => {
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {predictedPath && (
+        <div className="absolute bottom-4 right-4 bg-white p-4 rounded shadow">
+          <h3 className="font-bold mb-2">Predicted Path</h3>
+          <p>The predicted trajectory is displayed on the map.</p>
         </div>
       )}
 

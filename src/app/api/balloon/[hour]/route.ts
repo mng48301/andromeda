@@ -1,6 +1,9 @@
 import { NextResponse } from 'next/server';
 
-function isValidCoordinate(coord: any): boolean {
+type Coordinate = [number, number, number]; // [longitude, latitude, altitude]
+type BalloonData = Coordinate[];
+
+function isValidCoordinate(coord: unknown): coord is Coordinate {
   if (!Array.isArray(coord) || coord.length !== 3) return false;
   const [lng, lat, alt] = coord;
   return (
@@ -13,26 +16,35 @@ function isValidCoordinate(coord: any): boolean {
 export async function GET(
   request: Request,
   { params }: { params: { hour: string } }
-) {
+): Promise<NextResponse<BalloonData | { error: string }>> {
   try {
-    const hour = await Promise.resolve(params.hour);
+    const hour = params.hour.padStart(2, '0');
     const response = await fetch(`https://a.windbornesystems.com/treasure/${hour}.json`, {
+      method: 'GET',
       headers: {
-        'Accept': 'application/json'
-      }
+        'Accept': 'application/json',
+      },
+      cache: 'no-store',
+      next: { revalidate: 0 }
     });
 
     if (!response.ok) {
-      throw new Error(`HTTP error! status: ${response.status}`);
+      console.error(`API Error: ${response.status} for hour ${hour}`);
+      return NextResponse.json({ error: `HTTP error! status: ${response.status}` }, { status: response.status });
     }
 
     const text = await response.text();
+    console.log(`API received data for hour ${hour}: ${text.substring(0, 100)}...`);
+    
     try {
       const data = JSON.parse(text.trim());
       
       if (Array.isArray(data)) {
         // Filter out invalid coordinates
         const validData = data.filter(isValidCoordinate);
+        if (validData.length === 0) {
+          console.warn(`No valid coordinates found for hour ${hour}`);
+        }
         return NextResponse.json(validData);
       }
       
