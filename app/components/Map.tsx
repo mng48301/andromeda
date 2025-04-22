@@ -1,9 +1,12 @@
 'use client';
 
 import { useEffect, useState, useCallback } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet';
+import { MapContainer, TileLayer, Marker, Popup, Polyline, LayersControl, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
+import 'leaflet.markercluster/dist/MarkerCluster.css';
+import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
+import MarkerClusterGroup from 'react-leaflet-cluster';
 import { Balloon, WeatherData } from '../types';
 import { fetchWeatherData, fetchBalloonHistory, checkDangerConditions, predictNextPosition } from '../utils/balloonUtils';
 
@@ -59,11 +62,10 @@ function InstructionsPanel() {
                 <div className="p-4 space-y-2 text-sm">
                     <h3 className="font-bold text-lg mb-2">Instructions (windborne project):</h3>
                     <ul className="list-disc pl-5 space-y-2">
-                        <li>Each marker represents a high-altitude balloon in real-time</li>
-                        <li>Click on any balloon to view its historical flight path (green line) and predicted trajectory (purple dashed line)</li>
-                        <li>Warning symbols (⚠️) appear above balloons in dangerous conditions</li>
-                        <li>Click on a balloon or warning symbol to see detailed weather information</li>
-                        <li>Click on an active balloon again to hide its flight path</li>
+                        <li><strong>Click</strong> on any <strong>balloon cluster</strong> to view individual balloons</li>
+                        <li><strong>Select</strong> any balloon to view its <strong>historical flight path</strong> (green line) and <strong>predicted trajectory</strong> (purple dashed line)</li>
+                        <li><strong>Warning symbols</strong> (⚠️) appear above balloons in dangerous conditions</li>
+                        <li>Click on a balloon or warning symbol to see <strong>detailed weather information</strong></li>
                     </ul>
                     <div className="mt-4 p-2 bg-gray-100 rounded">
                         <p className="font-semibold">Legend:</p>
@@ -80,11 +82,177 @@ function InstructionsPanel() {
     );
 }
 
+function WeatherRadar() {
+    const map = useMap();
+    const [opacity, setOpacity] = useState(0.5);
+
+    useEffect(() => {
+        if (!process.env.NEXT_PUBLIC_WEATHER_API_KEY) return;
+
+        const weatherLayer = L.tileLayer(
+            `https://tile.openweathermap.org/map/precipitation_new/{z}/{x}/{y}.png?appid=${process.env.NEXT_PUBLIC_WEATHER_API_KEY}`,
+            {
+                opacity: opacity
+            }
+        ).addTo(map);
+
+        return () => {
+            map.removeLayer(weatherLayer);
+        };
+    }, [map, opacity]);
+
+    return (
+        <div className="absolute bottom-4 right-4 z-[1000] bg-white p-2 rounded-lg shadow-lg">
+            <label className="block text-sm font-medium text-gray-700">
+                Radar Opacity
+                <input
+                    type="range"
+                    min="0"
+                    max="1"
+                    step="0.1"
+                    value={opacity}
+                    onChange={(e) => setOpacity(Number(e.target.value))}
+                    className="w-full"
+                />
+            </label>
+        </div>
+    );
+}
+
+function WindIndicator({ lat, lon, weather }: { lat: number; lon: number; weather: WeatherData }) {
+    const windDirection = weather.windDeg || 0;
+    const windSpeed = weather.windSpeed || 0;
+
+    return (
+        <div
+            className="absolute w-6 h-6 transform -translate-x-1/2 -translate-y-1/2"
+            style={{
+                transform: `rotate(${windDirection}deg)`
+            }}
+        >
+            <div className="w-0 h-0 border-l-8 border-r-8 border-b-[16px] border-transparent border-b-blue-500 opacity-70" />
+            <div className="absolute top-full left-1/2 transform -translate-x-1/2 text-xs whitespace-nowrap">
+                {windSpeed.toFixed(1)} m/s
+            </div>
+        </div>
+    );
+}
+
+// Animated Balloon Marker Component
+function AnimatedBalloonMarker({ 
+    balloon, 
+    weather, 
+    isDangerous, 
+    flightPath, 
+    onBalloonClick 
+}: { 
+    balloon: Balloon;
+    weather: WeatherData | undefined;
+    isDangerous: boolean;
+    flightPath: { past: [number, number][]; predicted: [number, number][] } | undefined;
+    onBalloonClick: (balloon: Balloon) => void;
+}) {
+    const [position, setPosition] = useState<[number, number]>([balloon.lat, balloon.lon]);
+
+    useEffect(() => {
+        const steps = 30;
+        const duration = 1000;
+        const stepTime = duration / steps;
+        
+        let step = 0;
+        const startLat = position[0];
+        const startLon = position[1];
+        const latDiff = balloon.lat - startLat;
+        const lonDiff = balloon.lon - startLon;
+
+        const interval = setInterval(() => {
+            step++;
+            if (step <= steps) {
+                const progress = step / steps;
+                setPosition([
+                    startLat + latDiff * progress,
+                    startLon + lonDiff * progress
+                ]);
+            } else {
+                clearInterval(interval);
+            }
+        }, stepTime);
+
+        return () => clearInterval(interval);
+    }, [balloon.lat, balloon.lon]);
+
+    return (
+        <>
+            {isDangerous && (
+                <Marker
+                    position={[balloon.lat + 0.1, balloon.lon]}
+                    icon={warningIcon}
+                >
+                    <Popup>
+                        Warning: {checkDangerConditions(weather!).reason}
+                    </Popup>
+                </Marker>
+            )}
+            <Marker
+                position={position}
+                icon={balloonIcon}
+                eventHandlers={{
+                    click: () => onBalloonClick(balloon)
+                }}
+            >
+                <Popup>
+                    <div className="p-2">
+                        <h3 className="font-bold">Balloon {balloon.id}</h3>
+                        <p>Altitude: {balloon.alt.toFixed(0)}m</p>
+                        {weather && (
+                            <>
+                                <p>Temperature: {weather.temperature.toFixed(1)}°C</p>
+                                <p>Pressure: {weather.pressure} hPa</p>
+                                {weather.windSpeed && (
+                                    <p>Wind: {weather.windSpeed.toFixed(1)} m/s at {weather.windDeg}°</p>
+                                )}
+                            </>
+                        )}
+                    </div>
+                </Popup>
+            </Marker>
+            {weather && weather.windSpeed && (
+                <WindIndicator
+                    lat={balloon.lat}
+                    lon={balloon.lon}
+                    weather={weather}
+                />
+            )}
+            {flightPath && (
+                <>
+                    <Polyline
+                        positions={flightPath.past}
+                        color="green"
+                        weight={3}
+                    />
+                    {flightPath.predicted.length > 0 && (
+                        <Polyline
+                            positions={flightPath.predicted}
+                            color="purple"
+                            weight={3}
+                            dashArray="5, 10"
+                        />
+                    )}
+                </>
+            )}
+        </>
+    );
+}
+
 export default function Map({ balloons }: MapProps) {
     const [selectedBalloon, setSelectedBalloon] = useState<string | null>(null);
     const [weatherData, setWeatherData] = useState<Record<string, WeatherData>>({});
     const [flightPaths, setFlightPaths] = useState<Record<string, { past: [number, number][], predicted: [number, number][] }>>({});
     const [mapBounds, setMapBounds] = useState<L.LatLngBoundsExpression | null>(null);
+
+    // Add new state for layer visibility
+    const [showHeatmap, setShowHeatmap] = useState(false);
+    const [showRadar, setShowRadar] = useState(true);
 
     // Fetch weather data for balloons
     useEffect(() => {
@@ -206,69 +374,56 @@ export default function Map({ balloons }: MapProps) {
             zoom={DEFAULT_ZOOM}
             style={{ height: '100vh', width: '100%' }}
         >
-            <TileLayer
-                url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
-            />
+            <LayersControl position="topright">
+                <LayersControl.BaseLayer checked name="OpenStreetMap">
+                    <TileLayer
+                        url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                        attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+                    />
+                </LayersControl.BaseLayer>
+                
+                <LayersControl.BaseLayer name="Satellite">
+                    <TileLayer
+                        url="https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"
+                        attribution='&copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community'
+                    />
+                </LayersControl.BaseLayer>
+
+                <LayersControl.Overlay checked={showRadar} name="Weather Radar">
+                    {showRadar && <WeatherRadar />}
+                </LayersControl.Overlay>
+
+                <LayersControl.Overlay checked={showHeatmap} name="Temperature Heatmap">
+                    {showHeatmap && (
+                        <TileLayer
+                            url={`https://tile.openweathermap.org/map/temp_new/{z}/{x}/{y}.png?appid=${process.env.NEXT_PUBLIC_WEATHER_API_KEY}`}
+                            opacity={0.5}
+                        />
+                    )}
+                </LayersControl.Overlay>
+            </LayersControl>
+
             <BoundsFitter bounds={mapBounds} />
             <InstructionsPanel />
-            {balloons.map((balloon) => {
-                const weather = weatherData[balloon.id];
-                const isDangerous = weather && checkDangerConditions(weather).isDangerous;
-                const flightPath = flightPaths[balloon.id];
 
-                return (
-                    <div key={balloon.id}>
-                        {isDangerous && (
-                            <Marker
-                                position={[balloon.lat + 0.1, balloon.lon]}
-                                icon={warningIcon}
-                            >
-                                <Popup>
-                                    Warning: {checkDangerConditions(weather).reason}
-                                </Popup>
-                            </Marker>
-                        )}
-                        <Marker
-                            position={[balloon.lat, balloon.lon]}
-                            icon={balloonIcon}
-                            eventHandlers={{
-                                click: () => handleBalloonClick(balloon)
-                            }}
-                        >
-                            <Popup>
-                                <div className="p-2">
-                                    <h3 className="font-bold">Balloon {balloon.id}</h3>
-                                    <p>Altitude: {balloon.alt.toFixed(0)}m</p>
-                                    {weather && (
-                                        <>
-                                            <p>Temperature: {weather.temperature.toFixed(1)}°C</p>
-                                            <p>Pressure: {weather.pressure} hPa</p>
-                                        </>
-                                    )}
-                                </div>
-                            </Popup>
-                        </Marker>
-                        {flightPath && (
-                            <>
-                                <Polyline
-                                    positions={flightPath.past}
-                                    color="green"
-                                    weight={3}
-                                />
-                                {flightPath.predicted.length > 0 && (
-                                    <Polyline
-                                        positions={flightPath.predicted}
-                                        color="purple"
-                                        weight={3}
-                                        dashArray="5, 10"
-                                    />
-                                )}
-                            </>
-                        )}
-                    </div>
-                );
-            })}
+            <MarkerClusterGroup>
+                {balloons.map((balloon) => {
+                    const weather = weatherData[balloon.id];
+                    const isDangerous = weather && checkDangerConditions(weather).isDangerous;
+                    const flightPath = flightPaths[balloon.id];
+
+                    return (
+                        <AnimatedBalloonMarker
+                            key={balloon.id}
+                            balloon={balloon}
+                            weather={weather}
+                            isDangerous={isDangerous}
+                            flightPath={flightPath}
+                            onBalloonClick={handleBalloonClick}
+                        />
+                    );
+                })}
+            </MarkerClusterGroup>
         </MapContainer>
     );
 }

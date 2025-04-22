@@ -9,6 +9,8 @@ export interface Balloon {
 export interface WeatherData {
     temperature: number;
     pressure: number;
+    windSpeed?: number;
+    windDeg?: number;
 }
 
 export interface BalloonHistory {

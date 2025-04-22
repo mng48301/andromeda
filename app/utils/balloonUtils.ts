@@ -161,13 +161,18 @@ export async function fetchWeatherData(lat: number, lon: number): Promise<Weathe
 
         return {
             temperature: Number(data.main.temp),
-            pressure: Number(data.main.pressure)
+            pressure: Number(data.main.pressure),
+            windSpeed: data.wind?.speed,
+            windDeg: data.wind?.deg
         };
     } catch (error) {
         console.error('Error fetching weather data:', error);
+        // Return safe default values including wind data
         return {
             temperature: 20,
-            pressure: 1013
+            pressure: 1013,
+            windSpeed: 0,
+            windDeg: 0
         };
     }
 }
