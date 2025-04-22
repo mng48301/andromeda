@@ -8,7 +8,7 @@ import 'leaflet.markercluster/dist/MarkerCluster.css';
 import 'leaflet.markercluster/dist/MarkerCluster.Default.css';
 import MarkerClusterGroup from 'react-leaflet-cluster';
 import { Balloon, WeatherData } from '../types';
-import { fetchWeatherData, fetchBalloonHistory, checkDangerConditions, predictNextPosition } from '../utils/balloonUtils';
+import { fetchWeatherData, fetchBalloonHistory, checkDangerConditions, predictNextPosition, isInDangerousArea } from '../utils/balloonUtils';
 
 // Create custom warning icon
 const warningIcon = new L.Icon({
@@ -64,7 +64,7 @@ function InstructionsPanel() {
                     <ul className="list-disc pl-5 space-y-2">
                         <li><strong>Click</strong> on any <strong>balloon cluster</strong> to view individual balloons</li>
                         <li><strong>Select</strong> any balloon to view its <strong>historical flight path</strong> (green line) and <strong>predicted trajectory</strong> (purple dashed line)</li>
-                        <li><strong>Warning symbols</strong> (⚠️) appear above balloons in dangerous conditions</li>
+                        <li><strong>Warning symbols</strong> (⚠️) appear above balloons in dangerous conditions (high altitude, extreme cold, etc)</li>
                         <li>Click on a balloon or warning symbol to see <strong>detailed weather information</strong></li>
                     </ul>
                     <div className="mt-4 p-2 bg-gray-100 rounded">
@@ -153,6 +153,9 @@ function AnimatedBalloonMarker({
     onBalloonClick: (balloon: Balloon) => void;
 }) {
     const [position, setPosition] = useState<[number, number]>([balloon.lat, balloon.lon]);
+    const locationDanger = isInDangerousArea(balloon.lat, balloon.lon, balloon.alt);
+    const showWarning = isDangerous || locationDanger.isDangerous;
+    const warningReason = locationDanger.isDangerous ? locationDanger.reason : (weather ? checkDangerConditions(weather).reason : undefined);
 
     useEffect(() => {
         const steps = 30;
@@ -183,13 +186,16 @@ function AnimatedBalloonMarker({
 
     return (
         <>
-            {isDangerous && (
+            {showWarning && (
                 <Marker
                     position={[balloon.lat + 0.1, balloon.lon]}
                     icon={warningIcon}
                 >
                     <Popup>
-                        Warning: {checkDangerConditions(weather!).reason}
+                        <div className="p-2">
+                            <h3 className="font-bold text-red-500">Warning</h3>
+                            <p>{warningReason}</p>
+                        </div>
                     </Popup>
                 </Marker>
             )}
@@ -409,7 +415,7 @@ export default function Map({ balloons }: MapProps) {
             <MarkerClusterGroup>
                 {balloons.map((balloon) => {
                     const weather = weatherData[balloon.id];
-                    const isDangerous = weather && checkDangerConditions(weather).isDangerous;
+                    const weatherDanger = weather && checkDangerConditions(weather).isDangerous;
                     const flightPath = flightPaths[balloon.id];
 
                     return (
@@ -417,7 +423,7 @@ export default function Map({ balloons }: MapProps) {
                             key={balloon.id}
                             balloon={balloon}
                             weather={weather}
-                            isDangerous={isDangerous}
+                            isDangerous={weatherDanger || false}
                             flightPath={flightPath}
                             onBalloonClick={handleBalloonClick}
                         />

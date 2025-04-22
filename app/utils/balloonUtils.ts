@@ -205,3 +205,34 @@ export function predictNextPosition(positions: { lat: number; lon: number; times
         lon: last.lon + lonDiff
     };
 }
+
+function isInDangerousArea(lat: number, lon: number, alt: number): { isDangerous: boolean, reason?: string } {
+    // Check Antarctica (roughly below 60°S)
+    if (lat < -60) {
+        return { isDangerous: true, reason: 'Extreme cold in Antarctica' };
+    }
+
+    // Check Greenland (roughly between 60°N-85°N and 20°W-60°W)
+    if (lat > 60 && lat < 85 && lon > -60 && lon < -20) {
+        return { isDangerous: true, reason: 'Extreme cold over Greenland' };
+    }
+
+    // Check very high altitudes (above 30,000 meters)
+    if (alt > 30000) {
+        return { isDangerous: true, reason: 'Dangerously high altitude' };
+    }
+
+    // Check Arctic region (above 66.5°N)
+    if (lat > 66.5) {
+        return { isDangerous: true, reason: 'Extreme cold in Arctic region' };
+    }
+
+    // Check Siberia (roughly between 50°N-75°N and 60°E-180°E)
+    if (lat > 50 && lat < 75 && lon > 60 && lon < 180) {
+        return { isDangerous: true, reason: 'Extreme cold over Siberia' };
+    }
+
+    return { isDangerous: false };
+}
+
+export { isInDangerousArea };
