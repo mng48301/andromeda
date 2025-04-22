@@ -1,22 +1,18 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { MapContainer, TileLayer, Marker, Popup, Polyline } from 'react-leaflet';
+import { useEffect, useState, useCallback } from 'react';
+import { MapContainer, TileLayer, Marker, Popup, Polyline, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
 import { Balloon, WeatherData } from '../types';
 import { fetchWeatherData, fetchBalloonHistory, checkDangerConditions, predictNextPosition } from '../utils/balloonUtils';
 
-// Initialize default icon settings for Leaflet
-const DefaultIcon = L.Icon.Default;
-L.Icon.Default.imagePath = '/';
-
 // Create custom warning icon
 const warningIcon = new L.Icon({
     iconUrl: '/warning.svg',
-    iconSize: [24, 24],
-    iconAnchor: [12, 24],
-    popupAnchor: [0, -12],
+    iconSize: [32, 32], // Made larger for better visibility
+    iconAnchor: [16, 32],
+    popupAnchor: [0, -32],
 });
 
 // Create balloon icon
@@ -31,10 +27,22 @@ interface MapProps {
     balloons: Balloon[];
 }
 
+// Component to fit bounds when trajectories are shown
+function BoundsFitter({ bounds }: { bounds: L.LatLngBoundsExpression | null }) {
+    const map = useMap();
+    useEffect(() => {
+        if (bounds) {
+            map.fitBounds(bounds, { padding: [50, 50] });
+        }
+    }, [map, bounds]);
+    return null;
+}
+
 export default function Map({ balloons }: MapProps) {
     const [selectedBalloon, setSelectedBalloon] = useState<string | null>(null);
     const [weatherData, setWeatherData] = useState<Record<string, WeatherData>>({});
     const [flightPaths, setFlightPaths] = useState<Record<string, { past: [number, number][], predicted: [number, number][] }>>({});
+    const [mapBounds, setMapBounds] = useState<L.LatLngBoundsExpression | null>(null);
 
     // Fetch weather data for balloons
     useEffect(() => {
@@ -43,9 +51,10 @@ export default function Map({ balloons }: MapProps) {
                 try {
                     const data = await fetchWeatherData(balloon.lat, balloon.lon);
                     return [balloon.id, data] as const;
-                } catch (error) {
+                } catch {
                     console.warn('Weather data unavailable for balloon:', balloon.id);
-                    return [balloon.id, { temperature: 20, pressure: 1013 }] as const;
+                    // Use more realistic default values for high-altitude conditions
+                    return [balloon.id, { temperature: -20, pressure: 500 }] as const;
                 }
             });
 
@@ -62,43 +71,76 @@ export default function Map({ balloons }: MapProps) {
         }
     }, [balloons]);
 
-    // Handle balloon selection and fetch historical data
-    const handleBalloonClick = async (balloon: Balloon) => {
+    const handleBalloonClick = useCallback(async (balloon: Balloon) => {
         try {
             if (selectedBalloon === balloon.id) {
                 setSelectedBalloon(null);
-                const updatedPaths = { ...flightPaths };
-                delete updatedPaths[balloon.id];
-                setFlightPaths(updatedPaths);
+                setFlightPaths(prev => {
+                    const updated = { ...prev };
+                    delete updated[balloon.id];
+                    return updated;
+                });
+                setMapBounds(null);
                 return;
             }
 
             setSelectedBalloon(balloon.id);
             
-            // Generate hours array for last 6 hours
-            const hours = Array.from({length: 6}, (_, i) => i + 1);
-            const history = await fetchBalloonHistory(hours);
+            // Current balloon position for historical tracking
+            const currentPosition: [number, number, number] = [balloon.lat, balloon.lon, balloon.alt];
             
-            if (history.positions.length > 0) {
-                const pastPath = history.positions.map(pos => [pos.lat, pos.lon] as [number, number]);
-                pastPath.unshift([balloon.lat, balloon.lon]); // Add current position
-                
-                // Calculate predicted position
-                const prediction = predictNextPosition([...history.positions, balloon]);
-                const predictedPath = prediction ? [[balloon.lat, balloon.lon], [prediction.lat, prediction.lon]] as [number, number][] : [];
-                
-                setFlightPaths({
-                    ...flightPaths,
+            // Generate hours array for last 6 hours
+            const hours = Array.from({ length: 6 }, (_, i) => i + 1);
+            console.log('Fetching history for balloon:', balloon.id, currentPosition);
+            
+            const history = await fetchBalloonHistory(hours, currentPosition);
+            console.log('Received history:', history);
+
+            if (history.positions && history.positions.length > 0) {
+                // Create past path starting with current position
+                const pastPath = [[balloon.lat, balloon.lon] as [number, number]];
+                history.positions.forEach(pos => {
+                    pastPath.unshift([pos.lat, pos.lon]); // unshift to add older positions at the start
+                });
+
+                // Calculate predicted position using the most recent positions
+                const prediction = predictNextPosition([
+                    ...history.positions.slice(-2), // Take last two historical positions
+                    { lat: balloon.lat, lon: balloon.lon, timestamp: new Date().toISOString() }
+                ]);
+
+                const predictedPath = prediction 
+                    ? [[balloon.lat, balloon.lon], [prediction.lat, prediction.lon]] as [number, number][]
+                    : [];
+
+                console.log('Setting flight paths:', {
+                    balloon: balloon.id,
+                    past: pastPath,
+                    predicted: predictedPath
+                });
+
+                setFlightPaths(prev => ({
+                    ...prev,
                     [balloon.id]: {
                         past: pastPath,
                         predicted: predictedPath
                     }
-                });
+                }));
+
+                // Calculate bounds to include all points
+                const allPoints = [...pastPath, ...predictedPath];
+                if (allPoints.length > 0) {
+                    const bounds = L.latLngBounds(allPoints.map(([lat, lon]) => [lat, lon]));
+                    bounds.extend([balloon.lat, balloon.lon]); // Include current position
+                    setMapBounds(bounds);
+                }
+            } else {
+                console.warn('No historical positions found for balloon:', balloon.id);
             }
-        } catch (error) {
-            console.error('Error handling balloon click:', error);
+        } catch (err) {
+            console.error('Failed to process balloon click:', err);
         }
-    };
+    }, [selectedBalloon]);
 
     if (!balloons || balloons.length === 0) {
         return (
@@ -115,7 +157,6 @@ export default function Map({ balloons }: MapProps) {
         );
     }
 
-    // Calculate map center based on balloon positions
     const center: [number, number] = balloons.length > 0
         ? [balloons[0].lat, balloons[0].lon]
         : [0, 0];
@@ -130,6 +171,7 @@ export default function Map({ balloons }: MapProps) {
                 url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                 attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
             />
+            <BoundsFitter bounds={mapBounds} />
             {balloons.map((balloon) => {
                 const weather = weatherData[balloon.id];
                 const isDangerous = weather && checkDangerConditions(weather).isDangerous;
@@ -174,12 +216,14 @@ export default function Map({ balloons }: MapProps) {
                                     color="green"
                                     weight={3}
                                 />
-                                <Polyline
-                                    positions={flightPath.predicted}
-                                    color="purple"
-                                    weight={3}
-                                    dashArray="5, 10"
-                                />
+                                {flightPath.predicted.length > 0 && (
+                                    <Polyline
+                                        positions={flightPath.predicted}
+                                        color="purple"
+                                        weight={3}
+                                        dashArray="5, 10"
+                                    />
+                                )}
                             </>
                         )}
                     </div>

@@ -23,20 +23,16 @@ const SAMPLE_BALLOONS: Balloon[] = [
 
 export async function fetchCurrentBalloons(): Promise<Balloon[]> {
     try {
-        console.log('Fetching balloon data...');
-        const response = await fetch(LOCAL_API_URL);
+        console.log('Fetching current balloon data...');
+        const response = await fetch('/api/balloons');
 
         if (!response.ok) {
-            console.error('Response not OK:', response.status, response.statusText);
             throw new Error('Network response was not ok');
         }
 
         const data = await response.json();
-        console.log('Raw API data:', data);
         
-        // Data should be an array of [lat, lon, alt] arrays
         if (!Array.isArray(data)) {
-            console.error('Data is not an array:', data);
             throw new Error('Invalid data format');
         }
 
@@ -59,60 +55,84 @@ export async function fetchCurrentBalloons(): Promise<Balloon[]> {
             };
         }).filter((balloon): balloon is Balloon => balloon !== null);
         
-        console.log('Processed balloons:', balloons);
-        if (balloons.length === 0) {
-            console.warn('No valid balloons found in data');
-            return SAMPLE_BALLOONS;
-        }
         return balloons;
     } catch (error) {
-        console.warn('Error fetching balloon data, using sample data:', error);
-        return SAMPLE_BALLOONS;
+        console.error('Error fetching balloon data:', error);
+        throw error;
     }
 }
 
-export async function fetchBalloonHistory(hours: number[]): Promise<BalloonHistory> {
+export async function fetchBalloonHistory(hours: number[], currentPosition: [number, number, number]): Promise<BalloonHistory> {
     try {
+        console.log('Fetching history for balloon at position:', currentPosition);
+        const [currentLat, currentLon] = currentPosition;
+
         const historyPromises = hours.map(async (hour) => {
             try {
                 const paddedHour = hour.toString().padStart(2, '0');
-                const response = await fetch(`${EXTERNAL_BASE_URL}/${paddedHour}.json`, {
-                    headers: {
-                        'Accept': 'application/json'
-                    },
-                    cache: 'no-cache'
-                });
-
+                console.log(`Fetching data for hour ${paddedHour}`);
+                
+                const response = await fetch(`/api/balloons?hour=${paddedHour}`);
                 if (!response.ok) {
                     throw new Error(`Failed to fetch history for hour ${hour}`);
                 }
 
                 const data = await response.json();
-                // Find matching balloon in historical data
+                
                 if (Array.isArray(data)) {
-                    return data.map((pos) => ({
-                        lat: Number(pos[0]) || 0,
-                        lon: Number(pos[1]) || 0,
-                        timestamp: new Date(Date.now() - hour * 3600000).toISOString()
-                    }));
+                    // Find the balloon position closest to the current position
+                    let closestPosition = null;
+                    let minDistance = Infinity;
+
+                    for (const pos of data) {
+                        if (Array.isArray(pos) && pos.length >= 2) {
+                            const [lat, lon] = pos.map(Number);
+                            if (!isNaN(lat) && !isNaN(lon)) {
+                                const distance = Math.sqrt(
+                                    Math.pow(lat - currentLat, 2) + 
+                                    Math.pow(lon - currentLon, 2)
+                                );
+                                if (distance < minDistance) {
+                                    minDistance = distance;
+                                    closestPosition = { lat, lon };
+                                }
+                            }
+                        }
+                    }
+
+                    // Only use positions within a reasonable distance (5 degrees)
+                    if (closestPosition && minDistance < 5) {
+                        return {
+                            ...closestPosition,
+                            timestamp: new Date(Date.now() - hour * 3600000).toISOString()
+                        };
+                    }
                 }
-                throw new Error('Invalid historical data format');
+                return null;
             } catch (error) {
                 console.warn(`Error fetching history for hour ${hour}:`, error);
-                return [];
+                return null;
             }
         });
 
-        const historyArrays = await Promise.all(historyPromises);
-        // Flatten all positions into a single array
+        const historyPoints = (await Promise.all(historyPromises))
+            .filter((point): point is NonNullable<typeof point> => point !== null)
+            // Sort from oldest to newest
+            .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+        console.log('Processed history points:', historyPoints);
         return {
-            positions: historyArrays.flat()
+            positions: historyPoints
         };
     } catch (error) {
-        console.error('Error fetching balloon history:', error);
+        console.error('Error in fetchBalloonHistory:', error);
         return { positions: [] };
     }
 }
+
+// Add a simple rate limiter for the weather API
+const weatherRequestQueue: { [key: string]: number } = {};
+const MIN_REQUEST_INTERVAL = 1000; // 1 second minimum between requests for the same location
 
 export async function fetchWeatherData(lat: number, lon: number): Promise<WeatherData> {
     try {
@@ -121,24 +141,49 @@ export async function fetchWeatherData(lat: number, lon: number): Promise<Weathe
             throw new Error('Weather API key is not configured');
         }
 
+        // Round coordinates to 2 decimal places to reduce unique API calls
+        const roundedLat = Math.round(lat * 100) / 100;
+        const roundedLon = Math.round(lon * 100) / 100;
+        const locationKey = `${roundedLat},${roundedLon}`;
+
+        // Check if we need to wait before making another request
+        const lastRequestTime = weatherRequestQueue[locationKey] || 0;
+        const timeSinceLastRequest = Date.now() - lastRequestTime;
+        if (timeSinceLastRequest < MIN_REQUEST_INTERVAL) {
+            await new Promise(resolve => setTimeout(resolve, MIN_REQUEST_INTERVAL - timeSinceLastRequest));
+        }
+
+        // Update the last request time
+        weatherRequestQueue[locationKey] = Date.now();
+
         const response = await fetch(
-            `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${API_KEY}&units=metric`
+            `https://api.openweathermap.org/data/2.5/weather?lat=${roundedLat}&lon=${roundedLon}&appid=${API_KEY}&units=metric`,
+            {
+                headers: {
+                    'Accept': 'application/json'
+                },
+                cache: 'force-cache' // Use cache when possible
+            }
         );
 
         if (!response.ok) {
-            throw new Error('Weather API request failed');
+            const errorData = await response.json().catch(() => ({}));
+            console.error('Weather API error:', errorData);
+            if (response.status === 429) {
+                throw new Error('Weather API rate limit exceeded');
+            }
+            throw new Error(`Weather API request failed: ${response.status}`);
         }
 
         const data = await response.json();
         
-        // Ensure we have the required properties
-        if (!data.main || typeof data.main.temp === 'undefined' || typeof data.main.pressure === 'undefined') {
+        if (!data.main?.temp || !data.main?.pressure) {
             throw new Error('Invalid weather data format');
         }
 
         return {
-            temperature: data.main.temp,
-            pressure: data.main.pressure
+            temperature: Number(data.main.temp),
+            pressure: Number(data.main.pressure)
         };
     } catch (error) {
         console.error('Error fetching weather data:', error);
@@ -151,14 +196,14 @@ export async function fetchWeatherData(lat: number, lon: number): Promise<Weathe
 }
 
 export function checkDangerConditions(weather: WeatherData): DangerCondition {
-    const dangerousTemp = -40; // Celsius
-    const dangerousPressure = 300; // hPa
+    const dangerousTemp = -30; // Celsius - Adjusted to catch more cold conditions
+    const dangerousPressure = 500; // hPa - Adjusted for high altitude conditions
 
     if (weather.temperature < dangerousTemp) {
-        return { isDangerous: true, reason: 'Extreme cold temperature' };
+        return { isDangerous: true, reason: `Extreme cold temperature: ${weather.temperature.toFixed(1)}°C` };
     }
     if (weather.pressure < dangerousPressure) {
-        return { isDangerous: true, reason: 'Dangerously low pressure' };
+        return { isDangerous: true, reason: `Dangerously low pressure: ${weather.pressure} hPa` };
     }
     
     return { isDangerous: false };
