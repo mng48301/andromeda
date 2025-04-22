@@ -1,26 +1,5 @@
 import { Balloon, WeatherData, BalloonHistory, DangerCondition } from '../types';
 
-const EXTERNAL_BASE_URL = 'https://a.windbornesystems.com/treasure';
-const LOCAL_API_URL = '/api/balloons';
-
-// Sample data for development/fallback
-const SAMPLE_BALLOONS: Balloon[] = [
-    {
-        id: 'balloon-1',
-        lat: 40.7128,
-        lon: -74.0060,
-        alt: 30000,
-        timestamp: new Date().toISOString()
-    },
-    {
-        id: 'balloon-2',
-        lat: 34.0522,
-        lon: -118.2437,
-        alt: 25000,
-        timestamp: new Date().toISOString()
-    }
-];
-
 export async function fetchCurrentBalloons(): Promise<Balloon[]> {
     try {
         console.log('Fetching current balloon data...');
@@ -117,7 +96,6 @@ export async function fetchBalloonHistory(hours: number[], currentPosition: [num
 
         const historyPoints = (await Promise.all(historyPromises))
             .filter((point): point is NonNullable<typeof point> => point !== null)
-            // Sort from oldest to newest
             .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
 
         console.log('Processed history points:', historyPoints);
@@ -130,7 +108,7 @@ export async function fetchBalloonHistory(hours: number[], currentPosition: [num
     }
 }
 
-// Add a simple rate limiter for the weather API
+// Weather API rate limiting
 const weatherRequestQueue: { [key: string]: number } = {};
 const MIN_REQUEST_INTERVAL = 1000; // 1 second minimum between requests for the same location
 
@@ -162,7 +140,7 @@ export async function fetchWeatherData(lat: number, lon: number): Promise<Weathe
                 headers: {
                     'Accept': 'application/json'
                 },
-                cache: 'force-cache' // Use cache when possible
+                cache: 'force-cache'
             }
         );
 
@@ -187,7 +165,6 @@ export async function fetchWeatherData(lat: number, lon: number): Promise<Weathe
         };
     } catch (error) {
         console.error('Error fetching weather data:', error);
-        // Return safe default values
         return {
             temperature: 20,
             pressure: 1013
