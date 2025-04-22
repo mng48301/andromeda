@@ -60,12 +60,12 @@ function InstructionsPanel() {
             </button>
             {isExpanded && (
                 <div className="p-4 space-y-2 text-sm">
-                    <h3 className="font-bold text-lg mb-2">Instructions (windborne project):</h3>
+                    <h3 className="font-bold text-lg mb-2">--- Andromeda ---</h3>
                     <ul className="list-disc pl-5 space-y-2">
                         <li><strong>Click</strong> on any <strong>balloon cluster</strong> to view individual balloons</li>
                         <li><strong>Select</strong> any balloon to view its <strong>historical flight path</strong> (green line) and <strong>predicted trajectory</strong> (purple dashed line)</li>
                         <li><strong>Warning symbols</strong> (⚠️) appear above balloons in dangerous conditions (high altitude, extreme cold, etc)</li>
-                        <li>Click on a balloon or warning symbol to see <strong>detailed weather information</strong></li>
+                        <li>The <strong>Statistics Panel</strong> shows aggregate data from all balloons</li>
                     </ul>
                     <div className="mt-4 p-2 bg-gray-100 rounded">
                         <p className="font-semibold">Keyboard Shortcuts:</p>
