@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useMemo, memo } from 'react';
 import { MapContainer, TileLayer, Marker, Popup, Polyline, LayersControl, useMap } from 'react-leaflet';
 import L from 'leaflet';
 import 'leaflet/dist/leaflet.css';
@@ -13,7 +13,7 @@ import { fetchWeatherData, fetchBalloonHistory, checkDangerConditions, predictNe
 // Create custom warning icon
 const warningIcon = new L.Icon({
     iconUrl: '/warning.svg',
-    iconSize: [32, 32], // Made larger for better visibility
+    iconSize: [32, 32],
     iconAnchor: [16, 32],
     popupAnchor: [0, -32],
 });
@@ -27,7 +27,7 @@ const balloonIcon = new L.Icon({
 });
 
 // Default map settings
-const DEFAULT_CENTER: [number, number] = [58, -70]; // Centered over Northern Canada
+const DEFAULT_CENTER: [number, number] = [58, -70];
 const DEFAULT_ZOOM = 4;
 
 interface MapProps {
@@ -68,6 +68,14 @@ function InstructionsPanel() {
                         <li>Click on a balloon or warning symbol to see <strong>detailed weather information</strong></li>
                     </ul>
                     <div className="mt-4 p-2 bg-gray-100 rounded">
+                        <p className="font-semibold">Keyboard Shortcuts:</p>
+                        <div className="grid grid-cols-2 gap-2 mt-2">
+                            <div>/ - Search Balloons</div>
+                            <div>h - Toggle Heatmap</div>
+                            <div>Esc - Close Panels</div>
+                        </div>
+                    </div>
+                    <div className="mt-4 p-2 bg-gray-100 rounded">
                         <p className="font-semibold">Legend:</p>
                         <div className="grid grid-cols-2 gap-2 mt-2">
                             <div>🎈 Active Balloon</div>
@@ -76,70 +84,188 @@ function InstructionsPanel() {
                             <div>┈ ┈ Predicted Path</div>
                         </div>
                     </div>
+                    <div className="mt-4 text-xs text-gray-500">
+                        Use the stats panel and search feature for quick balloon analysis.
+                    </div>
                 </div>
             )}
         </div>
     );
 }
 
-function WeatherRadar() {
-    const map = useMap();
-    const [opacity, setOpacity] = useState(0.5);
+// Controls Panel Component for temperature toggle only
+const ControlsPanel = memo(function ControlsPanel({ showHeatmap, setShowHeatmap }: { showHeatmap: boolean; setShowHeatmap: (show: boolean) => void }) {
+    return (
+        <button
+            onClick={() => setShowHeatmap(!showHeatmap)}
+            className="bg-white px-4 py-2 rounded-lg shadow-lg hover:bg-gray-50 transition-colors w-full"
+        >
+            {showHeatmap ? 'Hide Temperature' : 'Show Temperature'}
+        </button>
+    );
+});
+
+// Stats Panel Component
+const StatsPanel = memo(function StatsPanel({ balloons, weatherData }: { balloons: Balloon[]; weatherData: Record<string, WeatherData> }) {
+    const [isExpanded, setIsExpanded] = useState(false);
+
+    const stats = useMemo(() => {
+        return {
+            totalBalloons: balloons.length,
+            avgAltitude: balloons.reduce((sum, b) => sum + b.alt, 0) / balloons.length,
+            avgTemp: Object.values(weatherData).reduce((sum, w) => sum + (w.temperature || 0), 0) / Object.values(weatherData).length,
+            dangerCount: balloons.reduce((count, balloon) => {
+                const weather = weatherData[balloon.id];
+                const weatherDanger = weather ? checkDangerConditions(weather).isDangerous : false;
+                const locationDanger = isInDangerousArea(balloon.lat, balloon.lon, balloon.alt).isDangerous;
+                return count + (weatherDanger || locationDanger ? 1 : 0);
+            }, 0)
+        };
+    }, [balloons, weatherData]);
+
+    return (
+        <div className="relative">
+            <button
+                onClick={() => setIsExpanded(!isExpanded)}
+                className="bg-blue-500 text-white px-4 py-2 rounded-lg shadow-lg hover:bg-blue-600 transition-colors w-full"
+            >
+                {isExpanded ? 'Hide Stats' : 'Show Stats'}
+            </button>
+            
+            {isExpanded && (
+                <div className="absolute top-full mt-2 right-0 bg-white rounded-lg shadow-lg p-4 w-64 z-20">
+                    <div className="space-y-4">
+                        <div className="grid grid-cols-2 gap-4">
+                            <div>
+                                <div className="text-sm text-gray-600">Total Balloons</div>
+                                <div className="text-xl font-semibold">{stats.totalBalloons}</div>
+                            </div>
+                            <div>
+                                <div className="text-sm text-gray-600">In Danger</div>
+                                <div className="text-xl font-semibold text-red-500">{stats.dangerCount}</div>
+                            </div>
+                        </div>
+                        <div>
+                            <div className="text-sm text-gray-600">Average Altitude</div>
+                            <div className="text-xl font-semibold">{stats.avgAltitude.toFixed(0)}m</div>
+                            <div className="w-full bg-gray-200 rounded-full h-2 mt-1">
+                                <div 
+                                    className="bg-blue-500 rounded-full h-2" 
+                                    style={{ width: `${Math.min((stats.avgAltitude / 15000) * 100, 100)}%` }}
+                                />
+                            </div>
+                        </div>
+                        <div>
+                            <div className="text-sm text-gray-600">Average Temperature</div>
+                            <div className="text-xl font-semibold">{stats.avgTemp.toFixed(1)}°C</div>
+                            <div className="w-full bg-gray-200 rounded-full h-2 mt-1">
+                                <div 
+                                    className={`rounded-full h-2 ${stats.avgTemp < 0 ? 'bg-blue-500' : 'bg-red-500'}`}
+                                    style={{ width: `${Math.min(Math.abs(stats.avgTemp / 40) * 100, 100)}%` }}
+                                />
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
+});
+
+// Search Panel Component
+const SearchPanel = memo(function SearchPanel({ 
+    balloons, 
+    onBalloonSelect 
+}: { 
+    balloons: Balloon[]; 
+    onBalloonSelect: (balloon: Balloon) => void;
+}) {
+    const [searchQuery, setSearchQuery] = useState("");
+    const [isExpanded, setIsExpanded] = useState(false);
+
+    const filteredBalloons = useMemo(() => {
+        if (!searchQuery) return [];
+        const query = searchQuery.toLowerCase();
+        return balloons.filter(b => 
+            b.id.toLowerCase().includes(query) || 
+            b.alt.toString().includes(query) ||
+            b.lat.toString().includes(query) ||
+            b.lon.toString().includes(query)
+        );
+    }, [balloons, searchQuery]);
 
     useEffect(() => {
-        if (!process.env.NEXT_PUBLIC_WEATHER_API_KEY) return;
-
-        const weatherLayer = L.tileLayer(
-            `https://tile.openweathermap.org/map/precipitation_new/{z}/{x}/{y}.png?appid=${process.env.NEXT_PUBLIC_WEATHER_API_KEY}`,
-            {
-                opacity: opacity
+        const handleKeyPress = (e: KeyboardEvent) => {
+            if (e.key === "/" && !isExpanded) {
+                e.preventDefault();
+                setIsExpanded(true);
+            } else if (e.key === "Escape" && isExpanded) {
+                setIsExpanded(false);
             }
-        ).addTo(map);
-
-        return () => {
-            map.removeLayer(weatherLayer);
         };
-    }, [map, opacity]);
+
+        document.addEventListener("keydown", handleKeyPress as any);
+        return () => document.removeEventListener("keydown", handleKeyPress as any);
+    }, [isExpanded]);
 
     return (
-        <div className="absolute bottom-4 right-4 z-[1000] bg-white p-2 rounded-lg shadow-lg">
-            <label className="block text-sm font-medium text-gray-700">
-                Radar Opacity
-                <input
-                    type="range"
-                    min="0"
-                    max="1"
-                    step="0.1"
-                    value={opacity}
-                    onChange={(e) => setOpacity(Number(e.target.value))}
-                    className="w-full"
-                />
-            </label>
+        <div className="relative">
+            <button
+                onClick={() => setIsExpanded(!isExpanded)}
+                className="bg-white px-4 py-2 rounded-lg shadow-lg hover:bg-gray-50 transition-colors w-full flex items-center justify-center gap-2"
+            >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+                </svg>
+                Search (Press "/")
+            </button>
+            
+            {isExpanded && (
+                <div className="absolute top-full mt-2 right-0 bg-white rounded-lg shadow-lg p-4 w-80 z-10">
+                    <div className="flex items-center gap-2 mb-4">
+                        <input
+                            type="text"
+                            placeholder="Search balloons..."
+                            value={searchQuery}
+                            onChange={(e) => setSearchQuery(e.target.value)}
+                            className="w-full px-3 py-2 border rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                            autoFocus
+                        />
+                    </div>
+                    {filteredBalloons.length > 0 ? (
+                        <div className="space-y-2 max-h-60 overflow-auto">
+                            {filteredBalloons.map(balloon => (
+                                <button
+                                    key={balloon.id}
+                                    onClick={() => {
+                                        onBalloonSelect(balloon);
+                                        setSearchQuery("");
+                                    }}
+                                    className="w-full p-2 text-left hover:bg-gray-100 rounded-lg transition-colors"
+                                >
+                                    <div className="font-semibold">Balloon {balloon.id}</div>
+                                    <div className="text-sm text-gray-600">
+                                        Alt: {balloon.alt.toFixed(0)}m | Lat: {balloon.lat.toFixed(2)} | Lon: {balloon.lon.toFixed(2)}
+                                    </div>
+                                </button>
+                            ))}
+                        </div>
+                    ) : searchQuery && (
+                        <div className="text-gray-500 text-center py-4">
+                            No balloons found matching "{searchQuery}"
+                        </div>
+                    )}
+                    <div className="mt-4 text-xs text-gray-500">
+                        Press "Esc" to close
+                    </div>
+                </div>
+            )}
         </div>
     );
-}
-
-function WindIndicator({ lat, lon, weather }: { lat: number; lon: number; weather: WeatherData }) {
-    const windDirection = weather.windDeg || 0;
-    const windSpeed = weather.windSpeed || 0;
-
-    return (
-        <div
-            className="absolute w-6 h-6 transform -translate-x-1/2 -translate-y-1/2"
-            style={{
-                transform: `rotate(${windDirection}deg)`
-            }}
-        >
-            <div className="w-0 h-0 border-l-8 border-r-8 border-b-[16px] border-transparent border-b-blue-500 opacity-70" />
-            <div className="absolute top-full left-1/2 transform -translate-x-1/2 text-xs whitespace-nowrap">
-                {windSpeed.toFixed(1)} m/s
-            </div>
-        </div>
-    );
-}
+});
 
 // Animated Balloon Marker Component
-function AnimatedBalloonMarker({ 
+const AnimatedBalloonMarker = memo(function AnimatedBalloonMarker({ 
     balloon, 
     weather, 
     isDangerous, 
@@ -222,13 +348,6 @@ function AnimatedBalloonMarker({
                     </div>
                 </Popup>
             </Marker>
-            {weather && weather.windSpeed && (
-                <WindIndicator
-                    lat={balloon.lat}
-                    lon={balloon.lon}
-                    weather={weather}
-                />
-            )}
             {flightPath && (
                 <>
                     <Polyline
@@ -248,17 +367,26 @@ function AnimatedBalloonMarker({
             )}
         </>
     );
-}
+});
 
 export default function Map({ balloons }: MapProps) {
     const [selectedBalloon, setSelectedBalloon] = useState<string | null>(null);
     const [weatherData, setWeatherData] = useState<Record<string, WeatherData>>({});
     const [flightPaths, setFlightPaths] = useState<Record<string, { past: [number, number][], predicted: [number, number][] }>>({});
     const [mapBounds, setMapBounds] = useState<L.LatLngBoundsExpression | null>(null);
-
-    // Add new state for layer visibility
     const [showHeatmap, setShowHeatmap] = useState(false);
-    const [showRadar, setShowRadar] = useState(true);
+
+    const memoizedWeatherData = useMemo(() => {
+        return Object.entries(weatherData).reduce((acc, [id, data]) => ({
+            ...acc,
+            [id]: {
+                ...data,
+                isDangerous: checkDangerConditions(data).isDangerous
+            }
+        }), {});
+    }, [weatherData]);
+
+    const memoizedFlightPaths = useMemo(() => flightPaths, [flightPaths]);
 
     // Fetch weather data for balloons
     useEffect(() => {
@@ -269,7 +397,6 @@ export default function Map({ balloons }: MapProps) {
                     return [balloon.id, data] as const;
                 } catch {
                     console.warn('Weather data unavailable for balloon:', balloon.id);
-                    // Use more realistic default values for high-altitude conditions
                     return [balloon.id, { temperature: -20, pressure: 500 }] as const;
                 }
             });
@@ -302,10 +429,7 @@ export default function Map({ balloons }: MapProps) {
 
             setSelectedBalloon(balloon.id);
             
-            // Current balloon position for historical tracking
             const currentPosition: [number, number, number] = [balloon.lat, balloon.lon, balloon.alt];
-            
-            // Generate hours array for last 6 hours
             const hours = Array.from({ length: 6 }, (_, i) => i + 1);
             console.log('Fetching history for balloon:', balloon.id, currentPosition);
             
@@ -313,15 +437,13 @@ export default function Map({ balloons }: MapProps) {
             console.log('Received history:', history);
 
             if (history.positions && history.positions.length > 0) {
-                // Create past path starting with current position
                 const pastPath = [[balloon.lat, balloon.lon] as [number, number]];
                 history.positions.forEach(pos => {
-                    pastPath.unshift([pos.lat, pos.lon]); // unshift to add older positions at the start
+                    pastPath.unshift([pos.lat, pos.lon]);
                 });
 
-                // Calculate predicted position using the most recent positions
                 const prediction = predictNextPosition([
-                    ...history.positions.slice(-2), // Take last two historical positions
+                    ...history.positions.slice(-2),
                     { lat: balloon.lat, lon: balloon.lon, timestamp: new Date().toISOString() }
                 ]);
 
@@ -343,11 +465,10 @@ export default function Map({ balloons }: MapProps) {
                     }
                 }));
 
-                // Calculate bounds to include all points
                 const allPoints = [...pastPath, ...predictedPath];
                 if (allPoints.length > 0) {
                     const bounds = L.latLngBounds(allPoints.map(([lat, lon]) => [lat, lon]));
-                    bounds.extend([balloon.lat, balloon.lon]); // Include current position
+                    bounds.extend([balloon.lat, balloon.lon]);
                     setMapBounds(bounds);
                 }
             } else {
@@ -395,35 +516,35 @@ export default function Map({ balloons }: MapProps) {
                     />
                 </LayersControl.BaseLayer>
 
-                <LayersControl.Overlay checked={showRadar} name="Weather Radar">
-                    {showRadar && <WeatherRadar />}
-                </LayersControl.Overlay>
-
-                <LayersControl.Overlay checked={showHeatmap} name="Temperature Heatmap">
-                    {showHeatmap && (
+                {showHeatmap && (
+                    <LayersControl.Overlay checked name="Temperature">
                         <TileLayer
                             url={`https://tile.openweathermap.org/map/temp_new/{z}/{x}/{y}.png?appid=${process.env.NEXT_PUBLIC_WEATHER_API_KEY}`}
                             opacity={0.5}
                         />
-                    )}
-                </LayersControl.Overlay>
+                    </LayersControl.Overlay>
+                )}
             </LayersControl>
 
             <BoundsFitter bounds={mapBounds} />
             <InstructionsPanel />
-
+            <div className="absolute top-24 right-4 z-[1000] flex flex-col gap-2 w-[200px]">
+                <SearchPanel balloons={balloons} onBalloonSelect={handleBalloonClick} />
+                <StatsPanel balloons={balloons} weatherData={memoizedWeatherData} />
+                <ControlsPanel showHeatmap={showHeatmap} setShowHeatmap={setShowHeatmap} />
+            </div>
             <MarkerClusterGroup>
                 {balloons.map((balloon) => {
-                    const weather = weatherData[balloon.id];
-                    const weatherDanger = weather && checkDangerConditions(weather).isDangerous;
-                    const flightPath = flightPaths[balloon.id];
+                    const weather = memoizedWeatherData[balloon.id];
+                    const weatherDanger = weather?.isDangerous || false;
+                    const flightPath = memoizedFlightPaths[balloon.id];
 
                     return (
                         <AnimatedBalloonMarker
                             key={balloon.id}
                             balloon={balloon}
                             weather={weather}
-                            isDangerous={weatherDanger || false}
+                            isDangerous={weatherDanger}
                             flightPath={flightPath}
                             onBalloonClick={handleBalloonClick}
                         />
