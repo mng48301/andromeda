@@ -1,6 +1,7 @@
 import { Balloon, WeatherData, BalloonHistory, DangerCondition } from '../types';
 
-const BASE_URL = 'https://a.windbornesystems.com/treasure';
+const EXTERNAL_BASE_URL = 'https://a.windbornesystems.com/treasure';
+const LOCAL_API_URL = '/api/balloons';
 
 // Sample data for development/fallback
 const SAMPLE_BALLOONS: Balloon[] = [
@@ -22,30 +23,48 @@ const SAMPLE_BALLOONS: Balloon[] = [
 
 export async function fetchCurrentBalloons(): Promise<Balloon[]> {
     try {
-        const response = await fetch(`${BASE_URL}/00.json`, {
-            mode: 'no-cors', // Try no-cors mode
-            cache: 'no-cache',
-            headers: {
-                'Accept': 'application/json'
-            }
-        });
+        console.log('Fetching balloon data...');
+        const response = await fetch(LOCAL_API_URL);
 
         if (!response.ok) {
+            console.error('Response not OK:', response.status, response.statusText);
             throw new Error('Network response was not ok');
         }
 
         const data = await response.json();
-        // Ensure we have an array of balloons with required properties
-        if (Array.isArray(data)) {
-            return data.map((balloon, index) => ({
-                id: balloon.id || `balloon-${index + 1}`,
-                lat: balloon.lat || 0,
-                lon: balloon.lon || 0,
-                alt: balloon.alt || 0,
-                timestamp: balloon.timestamp || new Date().toISOString()
-            }));
+        console.log('Raw API data:', data);
+        
+        // Data should be an array of [lat, lon, alt] arrays
+        if (!Array.isArray(data)) {
+            console.error('Data is not an array:', data);
+            throw new Error('Invalid data format');
         }
-        throw new Error('Invalid data format');
+
+        const balloons = data.map((balloon, index) => {
+            if (!Array.isArray(balloon) || balloon.length < 3) {
+                console.warn('Invalid balloon data entry:', balloon);
+                return null;
+            }
+            const [lat, lon, alt] = balloon.map(Number);
+            if (isNaN(lat) || isNaN(lon) || isNaN(alt)) {
+                console.warn('Invalid numeric values in balloon data:', balloon);
+                return null;
+            }
+            return {
+                id: `balloon-${index + 1}`,
+                lat,
+                lon,
+                alt,
+                timestamp: new Date().toISOString()
+            };
+        }).filter((balloon): balloon is Balloon => balloon !== null);
+        
+        console.log('Processed balloons:', balloons);
+        if (balloons.length === 0) {
+            console.warn('No valid balloons found in data');
+            return SAMPLE_BALLOONS;
+        }
+        return balloons;
     } catch (error) {
         console.warn('Error fetching balloon data, using sample data:', error);
         return SAMPLE_BALLOONS;
@@ -57,37 +76,37 @@ export async function fetchBalloonHistory(hours: number[]): Promise<BalloonHisto
         const historyPromises = hours.map(async (hour) => {
             try {
                 const paddedHour = hour.toString().padStart(2, '0');
-                const response = await fetch(`${BASE_URL}/${paddedHour}.json`, {
-                    mode: 'no-cors',
-                    cache: 'no-cache',
+                const response = await fetch(`${EXTERNAL_BASE_URL}/${paddedHour}.json`, {
                     headers: {
                         'Accept': 'application/json'
-                    }
+                    },
+                    cache: 'no-cache'
                 });
 
                 if (!response.ok) {
                     throw new Error(`Failed to fetch history for hour ${hour}`);
                 }
 
-                return response.json();
+                const data = await response.json();
+                // Find matching balloon in historical data
+                if (Array.isArray(data)) {
+                    return data.map((pos) => ({
+                        lat: Number(pos[0]) || 0,
+                        lon: Number(pos[1]) || 0,
+                        timestamp: new Date(Date.now() - hour * 3600000).toISOString()
+                    }));
+                }
+                throw new Error('Invalid historical data format');
             } catch (error) {
                 console.warn(`Error fetching history for hour ${hour}:`, error);
-                // Return a fallback position based on the current balloon location
-                return {
-                    lat: 0,
-                    lon: 0,
-                    timestamp: new Date(Date.now() - hour * 3600000).toISOString()
-                };
+                return [];
             }
         });
 
-        const history = await Promise.all(historyPromises);
+        const historyArrays = await Promise.all(historyPromises);
+        // Flatten all positions into a single array
         return {
-            positions: history.map(data => ({
-                lat: data.lat || 0,
-                lon: data.lon || 0,
-                timestamp: data.timestamp || new Date().toISOString()
-            }))
+            positions: historyArrays.flat()
         };
     } catch (error) {
         console.error('Error fetching balloon history:', error);
