@@ -23,6 +23,10 @@ const balloonIcon = new L.Icon({
     popupAnchor: [0, -32],
 });
 
+// Default map settings
+const DEFAULT_CENTER: [number, number] = [58, -70]; // Centered over Northern Canada
+const DEFAULT_ZOOM = 4;
+
 interface MapProps {
     balloons: Balloon[];
 }
@@ -36,6 +40,44 @@ function BoundsFitter({ bounds }: { bounds: L.LatLngBoundsExpression | null }) {
         }
     }, [map, bounds]);
     return null;
+}
+
+// Instructions Panel Component
+function InstructionsPanel() {
+    const [isExpanded, setIsExpanded] = useState(true);
+
+    return (
+        <div className="absolute top-4 left-4 z-[1000] bg-white rounded-lg shadow-lg max-w-md">
+            <button 
+                onClick={() => setIsExpanded(!isExpanded)}
+                className="w-full px-4 py-2 text-left font-semibold bg-blue-500 text-white rounded-t-lg hover:bg-blue-600 transition-colors flex items-center justify-between"
+            >
+                <span><strong>Maxim Glisky</strong></span>
+                <span className="text-xl">{isExpanded ? '−' : '+'}</span>
+            </button>
+            {isExpanded && (
+                <div className="p-4 space-y-2 text-sm">
+                    <h3 className="font-bold text-lg mb-2">Instructions (windborne project):</h3>
+                    <ul className="list-disc pl-5 space-y-2">
+                        <li>Each marker represents a high-altitude balloon in real-time</li>
+                        <li>Click on any balloon to view its historical flight path (green line) and predicted trajectory (purple dashed line)</li>
+                        <li>Warning symbols (⚠️) appear above balloons in dangerous conditions</li>
+                        <li>Click on a balloon or warning symbol to see detailed weather information</li>
+                        <li>Click on an active balloon again to hide its flight path</li>
+                    </ul>
+                    <div className="mt-4 p-2 bg-gray-100 rounded">
+                        <p className="font-semibold">Legend:</p>
+                        <div className="grid grid-cols-2 gap-2 mt-2">
+                            <div>🎈 Active Balloon</div>
+                            <div>⚠️ Warning Condition</div>
+                            <div>━━ Historical Path</div>
+                            <div>┈ ┈ Predicted Path</div>
+                        </div>
+                    </div>
+                </div>
+            )}
+        </div>
+    );
 }
 
 export default function Map({ balloons }: MapProps) {
@@ -145,26 +187,23 @@ export default function Map({ balloons }: MapProps) {
     if (!balloons || balloons.length === 0) {
         return (
             <MapContainer
-                center={[0, 0]}
-                zoom={2}
+                center={DEFAULT_CENTER}
+                zoom={DEFAULT_ZOOM}
                 style={{ height: '100vh', width: '100%' }}
             >
                 <TileLayer
                     url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
                     attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                 />
+                <InstructionsPanel />
             </MapContainer>
         );
     }
 
-    const center: [number, number] = balloons.length > 0
-        ? [balloons[0].lat, balloons[0].lon]
-        : [0, 0];
-
     return (
         <MapContainer
-            center={center}
-            zoom={4}
+            center={DEFAULT_CENTER}
+            zoom={DEFAULT_ZOOM}
             style={{ height: '100vh', width: '100%' }}
         >
             <TileLayer
@@ -172,6 +211,7 @@ export default function Map({ balloons }: MapProps) {
                 attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
             />
             <BoundsFitter bounds={mapBounds} />
+            <InstructionsPanel />
             {balloons.map((balloon) => {
                 const weather = weatherData[balloon.id];
                 const isDangerous = weather && checkDangerConditions(weather).isDangerous;
